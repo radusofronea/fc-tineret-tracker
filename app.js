@@ -1,5 +1,6 @@
 /* ===================== Storage ===================== */
 const STORAGE_KEY = 'fcYouthTrackerData_v1';
+const APP_VERSION = '2026-06-19.3';
 
 function loadPlayers() {
   try {
@@ -193,9 +194,15 @@ function renderList() {
     <div class="topbar">
       <h1>⚽ FC Tineret Tracker</h1>
     </div>
-    <button class="btn secondary full" data-action="open-modal" data-modal="bulk-start" style="margin-bottom:16px;">📅 Actualizare anuală (toți jucătorii)</button>
+    <button class="btn secondary full" data-action="open-modal" data-modal="bulk-start" style="margin-bottom:10px;">📅 Actualizare anuală (toți jucătorii)</button>
+    <div class="row2" style="margin-bottom:16px;">
+      <button class="btn secondary full" data-action="export">💾 Backup (export)</button>
+      <button class="btn secondary full" data-action="import-trigger">📂 Restaurează</button>
+    </div>
+    <input type="file" id="import-input" accept="application/json" style="display:none;">
     ${body}
     <button class="fab" data-action="add">+</button>
+    <div class="hint" style="text-align:center;margin-top:24px;">versiune: ${APP_VERSION} · ${PLAYERS.length} jucători salvați aici</div>
   `;
 }
 
@@ -639,9 +646,40 @@ function attachHandlers() {
       } else if (action === 'bulk-skip') {
         BULK.idx += 1;
         navigate({ name: 'bulkUpdate' });
+      } else if (action === 'export') {
+        exportData();
+      } else if (action === 'import-trigger') {
+        document.getElementById('import-input').click();
       }
     });
   });
+
+  const importInput = document.getElementById('import-input');
+  if (importInput) {
+    importInput.addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = () => {
+        try {
+          const data = JSON.parse(reader.result);
+          if (!Array.isArray(data)) throw new Error('format invalid');
+          const mode = confirm(`Fișierul are ${data.length} jucători.\nOK = înlocuiește tot ce ai acum.\nAnulează = adaugă la cei existenți (fără duplicate).`);
+          if (mode) {
+            PLAYERS = data;
+          } else {
+            const existingIds = new Set(PLAYERS.map(p => p.id));
+            data.forEach(p => { if (!existingIds.has(p.id)) PLAYERS.push(p); });
+          }
+          savePlayers(PLAYERS);
+          navigate({ name: 'list' });
+        } catch (err) {
+          alert('Fișierul nu pare valid: ' + err.message);
+        }
+      };
+      reader.readAsText(file);
+    });
+  }
 
   const modalContent = app.querySelector('.modal');
   if (modalContent) {
@@ -764,6 +802,19 @@ function attachHandlers() {
       navigate({ name: 'bulkUpdate' });
     });
   }
+}
+
+function exportData() {
+  const blob = new Blob([JSON.stringify(PLAYERS, null, 2)], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const stamp = new Date().toISOString().slice(0, 10);
+  a.href = url;
+  a.download = `fc-tineret-backup-${stamp}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 function escapeHtml(str) {
