@@ -18,7 +18,8 @@ function uid() {
 }
 
 /* ===================== Constants ===================== */
-const POSITIONS = ['GK','CB','LB','RB','LWB','RWB','CDM','CM','CAM','LM','RM','LW','RW','CF','ST'];
+const POSITIONS = ['GK','LB','LWB','CB','RB','RWB','CDM','LM','CM','RM','LW','CAM','RW','CF','ST'];
+const POSITION_ORDER = POSITIONS.reduce((acc, p, i) => { acc[p] = i; return acc; }, {});
 
 const POTENTIAL_TEXT_OPTIONS = [
   { value: 'club_since', label: 'At the club since 20XX', range: '< 80' },
@@ -28,10 +29,13 @@ const POTENTIAL_TEXT_OPTIONS = [
 ];
 
 const MONTH_NAMES = ['ian','feb','mar','apr','mai','iun','iul','aug','sep','oct','noi','dec'];
+const YEAR_START = 2024;
+const YEAR_END = 2060;
 
 /* ===================== Router ===================== */
 let CURRENT_VIEW = { name: 'list' };
 let OPEN_MODAL = null; // {type, playerId}
+let BULK = null; // {gameYear, gameMonth, ids, idx}
 
 function navigate(view) {
   CURRENT_VIEW = view;
@@ -99,6 +103,38 @@ function deltaSpan(diff, unit) {
   const sign = diff > 0 ? '+' : '';
   return `<span class="delta ${cls}">${sign}${diff}${unit || ''}</span>`;
 }
+function monthOptionsHtml(selected) {
+  return `<option value="">Luna (opțional)</option>` +
+    MONTH_NAMES.map((m, i) => `<option value="${i + 1}" ${Number(selected) === i + 1 ? 'selected' : ''}>${m}</option>`).join('');
+}
+function yearOptionsHtml(selected) {
+  let opts = `<option value="">Anul (opțional)</option>`;
+  for (let y = YEAR_START; y <= YEAR_END; y++) {
+    opts += `<option value="${y}" ${Number(selected) === y ? 'selected' : ''}>${y}</option>`;
+  }
+  return opts;
+}
+function sortPlayers(players) {
+  return players.slice().sort((a, b) => {
+    const oa = POSITION_ORDER[a.position] ?? 99;
+    const ob = POSITION_ORDER[b.position] ?? 99;
+    if (oa !== ob) return oa - ob;
+    return a.name.localeCompare(b.name);
+  });
+}
+function annotatedSnapshots(player) {
+  const snaps = player.snapshots.map(s => ({ ...s }));
+  let prevText = null;
+  snaps.forEach(s => {
+    if (s.stage === 'club' && s.potentialText) {
+      if (prevText !== null && s.potentialText !== prevText) {
+        s.potentialChangedFrom = prevText;
+      }
+      prevText = s.potentialText;
+    }
+  });
+  return snaps;
+}
 
 /* ===================== Render root ===================== */
 function render() {
@@ -107,6 +143,7 @@ function render() {
   if (CURRENT_VIEW.name === 'list') html = renderList();
   else if (CURRENT_VIEW.name === 'add') html = renderAddForm();
   else if (CURRENT_VIEW.name === 'detail') html = renderDetail(CURRENT_VIEW.id);
+  else if (CURRENT_VIEW.name === 'bulkUpdate') html = renderBulkUpdate();
   app.innerHTML = html;
 
   if (OPEN_MODAL) {
@@ -121,28 +158,13 @@ function render() {
 
 /* ===================== List view ===================== */
 function renderList() {
-  const filter = CURRENT_VIEW.filter || 'all';
-  let players = PLAYERS.slice().sort((a, b) => {
-    const la = latestSnapshot(a), lb = latestSnapshot(b);
-    return lb.date.localeCompare(la.date);
-  });
-  if (filter === 'youth') players = players.filter(p => !isPromoted(p));
-  if (filter === 'club') players = players.filter(p => isPromoted(p));
+  const youth = sortPlayers(PLAYERS.filter(p => !isPromoted(p)));
+  const club = sortPlayers(PLAYERS.filter(p => isPromoted(p)));
 
-  const counts = {
-    all: PLAYERS.length,
-    youth: PLAYERS.filter(p => !isPromoted(p)).length,
-    club: PLAYERS.filter(p => isPromoted(p)).length,
-  };
-
-  let cards = '';
-  if (players.length === 0) {
-    cards = `<div class="empty">Niciun jucător aici încă.<br>Apasă + pentru a adăuga primul jucător de tineret.</div>`;
-  } else {
-    cards = players.map(p => {
-      const last = latestSnapshot(p);
-      const promoted = isPromoted(p);
-      return `
+  function cardHtml(p) {
+    const last = latestSnapshot(p);
+    const promoted = isPromoted(p);
+    return `
       <div class="card player-card" data-action="open" data-id="${p.id}">
         <div class="pos-badge">${p.position}</div>
         <div class="player-info">
@@ -155,27 +177,30 @@ function renderList() {
           <div class="sub">OVR</div>
         </div>
       </div>`;
-    }).join('');
+  }
+
+  let body = '';
+  if (PLAYERS.length === 0) {
+    body = `<div class="empty">Niciun jucător aici încă.<br>Apasă + pentru a adăuga primul jucător de tineret.</div>`;
+  } else {
+    body += `<div class="section-title"><h3>Tineret (${youth.length})</h3></div>`;
+    body += youth.length ? youth.map(cardHtml).join('') : `<div class="empty">Niciun jucător la tineret.</div>`;
+    body += `<div class="section-title"><h3>Echipa mare (${club.length})</h3></div>`;
+    body += club.length ? club.map(cardHtml).join('') : `<div class="empty">Niciun jucător promovat încă.</div>`;
   }
 
   return `
     <div class="topbar">
       <h1>⚽ FC Tineret Tracker</h1>
     </div>
-    <div class="tabs">
-      <div class="tab ${filter === 'all' ? 'active' : ''}" data-action="filter" data-filter="all">Toți (${counts.all})</div>
-      <div class="tab ${filter === 'youth' ? 'active' : ''}" data-action="filter" data-filter="youth">Tineret (${counts.youth})</div>
-      <div class="tab ${filter === 'club' ? 'active' : ''}" data-action="filter" data-filter="club">Echipa mare (${counts.club})</div>
-    </div>
-    ${cards}
+    <button class="btn secondary full" data-action="open-modal" data-modal="bulk-start" style="margin-bottom:16px;">📅 Actualizare anuală (toți jucătorii)</button>
+    ${body}
     <button class="fab" data-action="add">+</button>
   `;
 }
 
 /* ===================== Add player form ===================== */
 function renderAddForm() {
-  const months = MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
-
   return `
     <div class="topbar">
       <button class="back" data-action="back">← Înapoi</button>
@@ -195,7 +220,7 @@ function renderAddForm() {
         </div>
         <div>
           <label>Vârstă</label>
-          <input type="number" name="age" required min="14" max="22" placeholder="17">
+          <input type="number" name="age" required min="13" max="22" placeholder="17">
         </div>
       </div>
 
@@ -218,13 +243,8 @@ function renderAddForm() {
 
       <label>Când l-ai găsit, în joc (opțional)</label>
       <div class="row2">
-        <div>
-          <select name="gameMonth">
-            <option value="">Luna (opțional)</option>
-            ${months}
-          </select>
-        </div>
-        <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul, ex: 2026"></div>
+        <div><select name="gameMonth">${monthOptionsHtml()}</select></div>
+        <div><select name="gameYear">${yearOptionsHtml()}</select></div>
       </div>
       <div class="hint">Util ca să vezi mai târziu evoluția pe ani de joc. Poți lăsa liber dacă nu mai știi.</div>
 
@@ -246,7 +266,6 @@ function renderDetail(id) {
   const last = latestSnapshot(player);
   const first = firstSnapshot(player);
   const promoted = isPromoted(player);
-  const promo = firstClubSnapshot(player);
   const prev = player.snapshots.length > 1 ? player.snapshots[player.snapshots.length - 2] : null;
 
   const ovrDeltaTotal = last.ovr - first.ovr;
@@ -272,8 +291,9 @@ function renderDetail(id) {
     `;
   }
 
-  const history = player.snapshots.slice().reverse().map((s, idx) => {
-    const isFirst = idx === player.snapshots.length - 1;
+  const annotated = annotatedSnapshots(player);
+  const history = annotated.slice().reverse().map((s, idx) => {
+    const isFirst = idx === annotated.length - 1;
     const stageLabel = s.stage === 'club' ? 'Echipa mare' : 'Tineret';
     let details = `Vârstă ${s.age} · OVR ${s.ovr}`;
     if (s.potentialExact) details += ` · Potențial real tineret ${s.potentialExact}`;
@@ -283,10 +303,14 @@ function renderDetail(id) {
     }
     const gameDate = fmtGameDate(s.gameYear, s.gameMonth);
     const whenLabel = gameDate ? gameDate : `${fmtDate(s.date)} <span class="hint" style="margin:0;display:inline;">(an de joc necunoscut)</span>`;
+    const changeNote = s.potentialChangedFrom
+      ? `<div class="hint" style="color:var(--accent);margin-top:2px;">🔺 Schimbat din: ${potentialTextLabel(s.potentialChangedFrom)}</div>`
+      : '';
     return `
       <div class="history-item">
         <div class="when">${isFirst ? 'Descoperit' : (s.isPromotion ? 'Promovat la echipa mare' : 'Actualizare')} · ${whenLabel} <span class="chip ${s.stage === 'club' ? 'promoted' : 'youth'}" style="margin-top:0;">${stageLabel}</span></div>
         <div class="details">${details}</div>
+        ${changeNote}
         <div class="hint" style="margin-top:2px;">adăugat în aplicație: ${fmtDate(s.date)}</div>
       </div>
     `;
@@ -346,11 +370,30 @@ function renderDetail(id) {
   `;
 }
 
-/* ===================== Modal: promote / update ===================== */
+/* ===================== Modal: promote / update / bulk-start ===================== */
 function renderModal(modal) {
+  if (modal.type === 'bulk-start') {
+    return `
+    <div class="modal-overlay" data-action="close-modal">
+      <div class="modal" data-stop="1">
+        <h2>Actualizare anuală — toți jucătorii</h2>
+        <div class="sub">Alege luna/anul din joc, apoi treci pe rând prin fiecare jucător.</div>
+        <form id="bulk-start-form">
+          <label>Luna</label>
+          <select name="gameMonth">${monthOptionsHtml()}</select>
+          <label>Anul</label>
+          <select name="gameYear">${yearOptionsHtml()}</select>
+          <div class="form-actions">
+            <button type="button" class="btn secondary full" data-action="close-modal">Anulează</button>
+            <button type="submit" class="btn full">Continuă</button>
+          </div>
+        </form>
+      </div>
+    </div>`;
+  }
+
   const player = getPlayer(modal.playerId);
   const last = latestSnapshot(player);
-  const months = MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
 
   if (modal.type === 'promote') {
     return `
@@ -384,13 +427,8 @@ function renderModal(modal) {
 
           <label>Luna/anul din joc al promovării (opțional)</label>
           <div class="row2">
-            <div>
-              <select name="gameMonth">
-                <option value="">Luna (opțional)</option>
-                ${months}
-              </select>
-            </div>
-            <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul, ex: 2027"></div>
+            <div><select name="gameMonth">${monthOptionsHtml()}</select></div>
+            <div><select name="gameYear">${yearOptionsHtml()}</select></div>
           </div>
 
           <div class="form-actions">
@@ -409,7 +447,7 @@ function renderModal(modal) {
     <div class="modal-overlay" data-action="close-modal">
       <div class="modal" data-stop="1">
         <h2>Actualizare anuală</h2>
-        <div class="sub">${escapeHtml(player.name)} — ${fmtDate(new Date().toISOString())}</div>
+        <div class="sub">${escapeHtml(player.name)}</div>
         <form id="modal-form" data-kind="update">
           <div class="row2">
             <div><label>Vârstă</label><input type="number" name="age" required value="${last.age}"></div>
@@ -437,13 +475,8 @@ function renderModal(modal) {
 
           <label>Luna/anul din joc al acestei actualizări (opțional)</label>
           <div class="row2">
-            <div>
-              <select name="gameMonth">
-                <option value="">Luna (opțional)</option>
-                ${months}
-              </select>
-            </div>
-            <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul"></div>
+            <div><select name="gameMonth">${monthOptionsHtml()}</select></div>
+            <div><select name="gameYear">${yearOptionsHtml()}</select></div>
           </div>
 
           <div class="form-actions">
@@ -461,6 +494,59 @@ function lastMarketValue(player) {
   return s ? s.marketValue : '';
 }
 
+/* ===================== Bulk update view ===================== */
+function renderBulkUpdate() {
+  if (!BULK || BULK.idx >= BULK.ids.length) {
+    BULK = null;
+    navigate({ name: 'list' });
+    return '';
+  }
+  const player = getPlayer(BULK.ids[BULK.idx]);
+  const last = latestSnapshot(player);
+  const promoted = isPromoted(player);
+  const mv = splitMoney(lastMarketValue(player));
+  const when = fmtGameDate(BULK.gameYear, BULK.gameMonth) || 'data curentă';
+
+  return `
+    <div class="topbar">
+      <button class="back" data-action="bulk-exit">✕ Renunță</button>
+      <span class="hint">${BULK.idx + 1} / ${BULK.ids.length}</span>
+    </div>
+    <h2>${escapeHtml(player.name)} <span class="chip ${promoted ? 'promoted' : 'youth'}">${promoted ? 'Echipa mare' : 'Tineret'}</span></h2>
+    <div class="sub" style="color:var(--muted);margin-bottom:8px;">Actualizare pentru: ${when}</div>
+    <form id="bulk-form">
+      <div class="row2">
+        <div><label>Vârstă</label><input type="number" name="age" required value="${last.age}"></div>
+        <div><label>OVR</label><input type="number" name="ovr" required value="${last.ovr}"></div>
+      </div>
+      <label>Potențial real tineret</label>
+      <input type="number" name="potentialExact" value="${last.potentialExact || ''}">
+
+      ${promoted ? `
+      <label>Potențial (text)</label>
+      <select name="potentialText">
+        ${POTENTIAL_TEXT_OPTIONS.map(o => `<option value="${o.value}" ${last.potentialText === o.value ? 'selected' : ''}>${o.label} (${o.range})</option>`).join('')}
+      </select>
+      <label>Valoare de piață curentă</label>
+      <div class="row2">
+        <div><input type="number" name="marketValueAmount" min="0" step="0.01" value="${mv.amount}"></div>
+        <div>
+          <select name="marketValueUnit">
+            <option value="K" ${mv.unit === 'K' ? 'selected' : ''}>K (mii €)</option>
+            <option value="M" ${mv.unit === 'M' ? 'selected' : ''}>M (milioane €)</option>
+          </select>
+        </div>
+      </div>
+      ` : ''}
+
+      <div class="form-actions">
+        <button type="button" class="btn secondary full" data-action="bulk-skip">Sari peste</button>
+        <button type="submit" class="btn full">Salvează și continuă</button>
+      </div>
+    </form>
+  `;
+}
+
 /* ===================== Chart ===================== */
 let CHART_INSTANCE = null;
 function drawChart(player) {
@@ -472,31 +558,53 @@ function drawChart(player) {
     return `${gameDate || fmtDate(s.date)} (${s.age}a)`;
   });
   const ovrData = player.snapshots.map(s => s.ovr);
+  const mvData = player.snapshots.map(s => (s.marketValue !== undefined && s.marketValue !== null) ? s.marketValue : null);
+  const hasMv = mvData.some(v => v !== null);
+
+  const datasets = [
+    {
+      label: 'OVR',
+      data: ovrData,
+      borderColor: '#3ddc84',
+      backgroundColor: 'rgba(61,220,132,.15)',
+      tension: 0.3,
+      fill: true,
+      yAxisID: 'y',
+    },
+  ];
+  if (hasMv) {
+    datasets.push({
+      label: 'Valoare de piață',
+      data: mvData,
+      borderColor: '#ffb84f',
+      backgroundColor: 'rgba(255,184,79,.1)',
+      tension: 0.3,
+      spanGaps: true,
+      yAxisID: 'y1',
+    });
+  }
+
+  const scales = {
+    x: { ticks: { color: '#8d93a3' }, grid: { color: '#2a2f3a' } },
+    y: { position: 'left', ticks: { color: '#8d93a3' }, grid: { color: '#2a2f3a' } },
+  };
+  if (hasMv) {
+    scales.y1 = {
+      position: 'right',
+      ticks: { color: '#ffb84f', callback: (v) => fmtMoney(v) },
+      grid: { drawOnChartArea: false },
+    };
+  }
 
   CHART_INSTANCE = new Chart(canvas, {
     type: 'line',
-    data: {
-      labels,
-      datasets: [
-        {
-          label: 'OVR',
-          data: ovrData,
-          borderColor: '#3ddc84',
-          backgroundColor: 'rgba(61,220,132,.15)',
-          tension: 0.3,
-          fill: true,
-        },
-      ],
-    },
+    data: { labels, datasets },
     options: {
       responsive: true,
       plugins: {
         legend: { labels: { color: '#eef0f4' } },
       },
-      scales: {
-        x: { ticks: { color: '#8d93a3' }, grid: { color: '#2a2f3a' } },
-        y: { ticks: { color: '#8d93a3' }, grid: { color: '#2a2f3a' } },
-      },
+      scales,
     },
   });
 }
@@ -513,9 +621,7 @@ function attachHandlers() {
       } else if (action === 'add') {
         navigate({ name: 'add' });
       } else if (action === 'back') {
-        navigate({ name: 'list', filter: CURRENT_VIEW.filter });
-      } else if (action === 'filter') {
-        navigate({ name: 'list', filter: el.dataset.filter });
+        navigate({ name: 'list' });
       } else if (action === 'open-modal') {
         OPEN_MODAL = { type: el.dataset.modal, playerId: el.dataset.id };
         render();
@@ -527,6 +633,12 @@ function attachHandlers() {
           savePlayers(PLAYERS);
           navigate({ name: 'list' });
         }
+      } else if (action === 'bulk-exit') {
+        BULK = null;
+        navigate({ name: 'list' });
+      } else if (action === 'bulk-skip') {
+        BULK.idx += 1;
+        navigate({ name: 'bulkUpdate' });
       }
     });
   });
@@ -601,6 +713,55 @@ function attachHandlers() {
       savePlayers(PLAYERS);
       OPEN_MODAL = null;
       navigate({ name: 'detail', id: player.id });
+    });
+  }
+
+  const bulkStartForm = document.getElementById('bulk-start-form');
+  if (bulkStartForm) {
+    bulkStartForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(bulkStartForm);
+      const ids = sortPlayers(PLAYERS.filter(p => !isPromoted(p)))
+        .concat(sortPlayers(PLAYERS.filter(p => isPromoted(p))))
+        .map(p => p.id);
+      BULK = {
+        gameYear: fd.get('gameYear') ? Number(fd.get('gameYear')) : null,
+        gameMonth: fd.get('gameMonth') ? Number(fd.get('gameMonth')) : null,
+        ids,
+        idx: 0,
+      };
+      OPEN_MODAL = null;
+      navigate({ name: 'bulkUpdate' });
+    });
+  }
+
+  const bulkForm = document.getElementById('bulk-form');
+  if (bulkForm) {
+    bulkForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const fd = new FormData(bulkForm);
+      const player = getPlayer(BULK.ids[BULK.idx]);
+      const potentialExactRaw = fd.get('potentialExact');
+      const promoted = isPromoted(player);
+
+      const snapshot = {
+        date: new Date().toISOString(),
+        age: Number(fd.get('age')),
+        ovr: Number(fd.get('ovr')),
+        potentialExact: potentialExactRaw ? Number(potentialExactRaw) : null,
+        gameYear: BULK.gameYear,
+        gameMonth: BULK.gameMonth,
+        stage: promoted ? 'club' : 'youth',
+      };
+      if (promoted) {
+        snapshot.potentialText = fd.get('potentialText');
+        snapshot.marketValue = moneyFromForm(fd);
+      }
+
+      player.snapshots.push(snapshot);
+      savePlayers(PLAYERS);
+      BULK.idx += 1;
+      navigate({ name: 'bulkUpdate' });
     });
   }
 }
