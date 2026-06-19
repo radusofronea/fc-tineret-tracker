@@ -27,6 +27,8 @@ const POTENTIAL_TEXT_OPTIONS = [
   { value: 'special_potential', label: 'Has Potential To Be Special', range: '90+' },
 ];
 
+const MONTH_NAMES = ['ian','feb','mar','apr','mai','iun','iul','aug','sep','oct','noi','dec'];
+
 /* ===================== Router ===================== */
 let CURRENT_VIEW = { name: 'list' };
 let OPEN_MODAL = null; // {type, playerId}
@@ -60,9 +62,31 @@ function fmtDate(iso) {
 function fmtMoney(v) {
   if (v === undefined || v === null || v === '') return '-';
   const n = Number(v);
-  if (n >= 1000000) return (n / 1000000).toFixed(1).replace(/\.0$/, '') + 'M €';
-  if (n >= 1000) return (n / 1000).toFixed(0) + 'K €';
-  return n + ' €';
+  if (n >= 1000000) {
+    let s = (n / 1000000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    return `${s} M €`;
+  }
+  return `${Math.round(n / 1000)} K €`;
+}
+function splitMoney(v) {
+  if (v === undefined || v === null || v === '') return { amount: '', unit: 'K' };
+  const n = Number(v);
+  if (n >= 1000000) {
+    let s = (n / 1000000).toFixed(2).replace(/0+$/, '').replace(/\.$/, '');
+    return { amount: s, unit: 'M' };
+  }
+  return { amount: String(Math.round(n / 1000)), unit: 'K' };
+}
+function moneyFromForm(fd) {
+  const amount = fd.get('marketValueAmount');
+  if (!amount) return null;
+  const unit = fd.get('marketValueUnit');
+  return Number(amount) * (unit === 'M' ? 1000000 : 1000);
+}
+function fmtGameDate(year, month) {
+  if (!year) return null;
+  if (month) return `${MONTH_NAMES[Number(month) - 1]} ${year}`;
+  return String(year);
 }
 function potentialTextLabel(value) {
   const o = POTENTIAL_TEXT_OPTIONS.find(o => o.value === value);
@@ -123,7 +147,7 @@ function renderList() {
         <div class="pos-badge">${p.position}</div>
         <div class="player-info">
           <div class="name">${escapeHtml(p.name)}</div>
-          <div class="sub">Vârstă ${last.age} · ${last.potentialExact ? 'POT ' + last.potentialExact : 'POT ' + p.potentialRange}</div>
+          <div class="sub">Vârstă ${last.age} · ${last.potentialExact ? 'POT real ' + last.potentialExact : 'POT ' + p.potentialRange}</div>
           <span class="chip ${promoted ? 'promoted' : 'youth'}">${promoted ? potentialTextLabel(last.potentialText) || 'La echipa mare' : 'La tineret'}</span>
         </div>
         <div class="player-stats">
@@ -150,8 +174,7 @@ function renderList() {
 
 /* ===================== Add player form ===================== */
 function renderAddForm() {
-  const potOptions = [];
-  for (let lo = 60; lo <= 90; lo += 1) potOptions.push(lo);
+  const months = MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
 
   return `
     <div class="topbar">
@@ -181,18 +204,29 @@ function renderAddForm() {
           <label>OVR</label>
           <input type="number" name="ovr" required min="40" max="99" placeholder="62">
         </div>
-        <div>
-          <label>Potențial (interval inițial)</label>
-          <select name="potentialRange">
-            <option value="">-- alege --</option>
-            ${potOptions.map(lo => `<option value="${lo}-94">${lo}-94</option>`).join('')}
-          </select>
-        </div>
       </div>
 
-      <label>Potențial exact (dacă îl știi deja, din joc de tineret)</label>
+      <label>Potențial (interval inițial)</label>
+      <div class="row2">
+        <div><input type="number" name="potentialMin" min="40" max="99" placeholder="ex: 70"></div>
+        <div><input type="number" name="potentialMax" min="40" max="99" placeholder="ex: 94"></div>
+      </div>
+
+      <label>Potențial real tineret</label>
       <input type="number" name="potentialExact" min="40" max="99" placeholder="opțional">
-      <div class="hint">Lasă liber dacă încă nu ai jucat un meci de tineret cu el.</div>
+      <div class="hint">Cifra exactă, dacă a apărut deja dintr-un meci de tineret. Acest câmp nu apare în grafic.</div>
+
+      <label>Când l-ai găsit, în joc (opțional)</label>
+      <div class="row2">
+        <div>
+          <select name="gameMonth">
+            <option value="">Luna (opțional)</option>
+            ${months}
+          </select>
+        </div>
+        <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul, ex: 2026"></div>
+      </div>
+      <div class="hint">Util ca să vezi mai târziu evoluția pe ani de joc. Poți lăsa liber dacă nu mai știi.</div>
 
       <div class="form-actions">
         <button type="button" class="btn secondary full" data-action="back">Anulează</button>
@@ -242,16 +276,18 @@ function renderDetail(id) {
     const isFirst = idx === player.snapshots.length - 1;
     const stageLabel = s.stage === 'club' ? 'Echipa mare' : 'Tineret';
     let details = `Vârstă ${s.age} · OVR ${s.ovr}`;
-    if (s.potentialExact) details += ` · Potențial exact ${s.potentialExact}`;
-    else if (s.potentialRangeNote) details += ` · Potențial ${s.potentialRangeNote}`;
+    if (s.potentialExact) details += ` · Potențial real tineret ${s.potentialExact}`;
     if (s.stage === 'club') {
       if (s.potentialText) details += ` · ${potentialTextLabel(s.potentialText)}`;
       if (s.marketValue) details += ` · ${fmtMoney(s.marketValue)}`;
     }
+    const gameDate = fmtGameDate(s.gameYear, s.gameMonth);
+    const whenLabel = gameDate ? gameDate : `${fmtDate(s.date)} <span class="hint" style="margin:0;display:inline;">(an de joc necunoscut)</span>`;
     return `
       <div class="history-item">
-        <div class="when">${isFirst ? 'Descoperit' : (s.isPromotion ? 'Promovat la echipa mare' : 'Actualizare')} · ${fmtDate(s.date)} <span class="chip ${s.stage === 'club' ? 'promoted' : 'youth'}" style="margin-top:0;">${stageLabel}</span></div>
+        <div class="when">${isFirst ? 'Descoperit' : (s.isPromotion ? 'Promovat la echipa mare' : 'Actualizare')} · ${whenLabel} <span class="chip ${s.stage === 'club' ? 'promoted' : 'youth'}" style="margin-top:0;">${stageLabel}</span></div>
         <div class="details">${details}</div>
+        <div class="hint" style="margin-top:2px;">adăugat în aplicație: ${fmtDate(s.date)}</div>
       </div>
     `;
   }).join('');
@@ -281,9 +317,9 @@ function renderDetail(id) {
         ${ovrDeltaYear !== null ? deltaSpan(ovrDeltaYear, ' an. trec.') : ''}
       </div>
       <div class="stat-box">
-        <div class="label">Potențial</div>
-        <div class="value">${last.potentialExact || player.potentialRange}</div>
-        <div class="hint" style="margin:0;">inițial: ${player.potentialRange}</div>
+        <div class="label">Potențial real tineret</div>
+        <div class="value">${last.potentialExact || '-'}</div>
+        <div class="hint" style="margin:0;">interval inițial: ${player.potentialRange}</div>
       </div>
       <div class="stat-box">
         <div class="label">Total (de la descoperire)</div>
@@ -314,6 +350,7 @@ function renderDetail(id) {
 function renderModal(modal) {
   const player = getPlayer(modal.playerId);
   const last = latestSnapshot(player);
+  const months = MONTH_NAMES.map((m, i) => `<option value="${i + 1}">${m}</option>`).join('');
 
   if (modal.type === 'promote') {
     return `
@@ -326,7 +363,7 @@ function renderModal(modal) {
             <div><label>Vârstă</label><input type="number" name="age" required value="${last.age}"></div>
             <div><label>OVR</label><input type="number" name="ovr" required value="${last.ovr}"></div>
           </div>
-          <label>Potențial exact (dacă a apărut)</label>
+          <label>Potențial real tineret (dacă a apărut)</label>
           <input type="number" name="potentialExact" value="${last.potentialExact || ''}">
 
           <label>Potențial (text, la echipa mare)</label>
@@ -334,8 +371,27 @@ function renderModal(modal) {
             ${POTENTIAL_TEXT_OPTIONS.map(o => `<option value="${o.value}">${o.label} (${o.range})</option>`).join('')}
           </select>
 
-          <label>Valoare de piață la transfer (€)</label>
-          <input type="number" name="marketValue" min="0" placeholder="ex: 2500000">
+          <label>Valoare de piață la transfer</label>
+          <div class="row2">
+            <div><input type="number" name="marketValueAmount" min="0" step="0.01" placeholder="ex: 450 sau 1.2"></div>
+            <div>
+              <select name="marketValueUnit">
+                <option value="K">K (mii €)</option>
+                <option value="M">M (milioane €)</option>
+              </select>
+            </div>
+          </div>
+
+          <label>Luna/anul din joc al promovării (opțional)</label>
+          <div class="row2">
+            <div>
+              <select name="gameMonth">
+                <option value="">Luna (opțional)</option>
+                ${months}
+              </select>
+            </div>
+            <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul, ex: 2027"></div>
+          </div>
 
           <div class="form-actions">
             <button type="button" class="btn secondary full" data-action="close-modal">Anulează</button>
@@ -348,6 +404,7 @@ function renderModal(modal) {
 
   if (modal.type === 'update') {
     const promoted = isPromoted(player);
+    const mv = splitMoney(lastMarketValue(player));
     return `
     <div class="modal-overlay" data-action="close-modal">
       <div class="modal" data-stop="1">
@@ -358,7 +415,7 @@ function renderModal(modal) {
             <div><label>Vârstă</label><input type="number" name="age" required value="${last.age}"></div>
             <div><label>OVR</label><input type="number" name="ovr" required value="${last.ovr}"></div>
           </div>
-          <label>Potențial exact</label>
+          <label>Potențial real tineret</label>
           <input type="number" name="potentialExact" value="${last.potentialExact || ''}">
 
           ${promoted ? `
@@ -366,9 +423,28 @@ function renderModal(modal) {
           <select name="potentialText">
             ${POTENTIAL_TEXT_OPTIONS.map(o => `<option value="${o.value}" ${last.potentialText === o.value ? 'selected' : ''}>${o.label} (${o.range})</option>`).join('')}
           </select>
-          <label>Valoare de piață curentă (€)</label>
-          <input type="number" name="marketValue" min="0" value="${lastMarketValue(player) || ''}">
+          <label>Valoare de piață curentă</label>
+          <div class="row2">
+            <div><input type="number" name="marketValueAmount" min="0" step="0.01" value="${mv.amount}"></div>
+            <div>
+              <select name="marketValueUnit">
+                <option value="K" ${mv.unit === 'K' ? 'selected' : ''}>K (mii €)</option>
+                <option value="M" ${mv.unit === 'M' ? 'selected' : ''}>M (milioane €)</option>
+              </select>
+            </div>
+          </div>
           ` : ''}
+
+          <label>Luna/anul din joc al acestei actualizări (opțional)</label>
+          <div class="row2">
+            <div>
+              <select name="gameMonth">
+                <option value="">Luna (opțional)</option>
+                ${months}
+              </select>
+            </div>
+            <div><input type="number" name="gameYear" min="2000" max="2100" placeholder="Anul"></div>
+          </div>
 
           <div class="form-actions">
             <button type="button" class="btn secondary full" data-action="close-modal">Anulează</button>
@@ -391,9 +467,11 @@ function drawChart(player) {
   const canvas = document.getElementById('evo-chart');
   if (!canvas) return;
   if (CHART_INSTANCE) { CHART_INSTANCE.destroy(); CHART_INSTANCE = null; }
-  const labels = player.snapshots.map(s => `${fmtDate(s.date)} (${s.age}a)`);
+  const labels = player.snapshots.map(s => {
+    const gameDate = fmtGameDate(s.gameYear, s.gameMonth);
+    return `${gameDate || fmtDate(s.date)} (${s.age}a)`;
+  });
   const ovrData = player.snapshots.map(s => s.ovr);
-  const potData = player.snapshots.map(s => s.potentialExact || null);
 
   CHART_INSTANCE = new Chart(canvas, {
     type: 'line',
@@ -407,14 +485,6 @@ function drawChart(player) {
           backgroundColor: 'rgba(61,220,132,.15)',
           tension: 0.3,
           fill: true,
-        },
-        {
-          label: 'Potențial exact',
-          data: potData,
-          borderColor: '#4f8cff',
-          backgroundColor: 'rgba(79,140,255,.1)',
-          tension: 0.3,
-          spanGaps: true,
         },
       ],
     },
@@ -472,16 +542,20 @@ function attachHandlers() {
       e.preventDefault();
       const fd = new FormData(addForm);
       const potentialExactRaw = fd.get('potentialExact');
+      const potMin = fd.get('potentialMin') || 70;
+      const potMax = fd.get('potentialMax') || 94;
       const player = {
         id: uid(),
         position: fd.get('position'),
         name: fd.get('name').trim(),
-        potentialRange: fd.get('potentialRange') || '70-94',
+        potentialRange: `${potMin}-${potMax}`,
         snapshots: [{
           date: new Date().toISOString(),
           age: Number(fd.get('age')),
           ovr: Number(fd.get('ovr')),
           potentialExact: potentialExactRaw ? Number(potentialExactRaw) : null,
+          gameYear: fd.get('gameYear') ? Number(fd.get('gameYear')) : null,
+          gameMonth: fd.get('gameMonth') ? Number(fd.get('gameMonth')) : null,
           stage: 'youth',
         }],
       };
@@ -505,19 +579,21 @@ function attachHandlers() {
         age: Number(fd.get('age')),
         ovr: Number(fd.get('ovr')),
         potentialExact: potentialExactRaw ? Number(potentialExactRaw) : null,
+        gameYear: fd.get('gameYear') ? Number(fd.get('gameYear')) : null,
+        gameMonth: fd.get('gameMonth') ? Number(fd.get('gameMonth')) : null,
       };
 
       if (kind === 'promote') {
         snapshot.stage = 'club';
         snapshot.isPromotion = true;
         snapshot.potentialText = fd.get('potentialText');
-        snapshot.marketValue = fd.get('marketValue') ? Number(fd.get('marketValue')) : null;
+        snapshot.marketValue = moneyFromForm(fd);
       } else {
         const promoted = isPromoted(player);
         snapshot.stage = promoted ? 'club' : 'youth';
         if (promoted) {
           snapshot.potentialText = fd.get('potentialText');
-          snapshot.marketValue = fd.get('marketValue') ? Number(fd.get('marketValue')) : null;
+          snapshot.marketValue = moneyFromForm(fd);
         }
       }
 
